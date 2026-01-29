@@ -87,7 +87,7 @@ Este é um bot robusto e multifuncional para Discord, desenvolvido especificamen
 | `/dtg convite` | 📩 Gera o convite oficial com banner animado. |
 | `/dtg ajuda` | ❓ Mostra informações de ajuda. |
 
-### 🛡️ Comandos Administrativos (Apenas Owner/Admin)
+### 🛡️ Comandos Administrativos (Apenas Dono do BOT)
 
 **Gerenciamento de Conteúdo:**
 | Comando | Descrição |
@@ -96,6 +96,9 @@ Este é um bot robusto e multifuncional para Discord, desenvolvido especificamen
 | `/dtg addsoft` | Adiciona software ao banco, posta no canal e faz broadcast. |
 | `/dtg chat [usuario]` | Abre ticket de suporte privado com um usuário. |
 | `/dtg limpar [qtd]` | Limpa mensagens do chat (Bulk Delete). |
+| `/dtg avisotds` | 📢 Envia um aviso global para todos os servidores configurados. |
+| `/dtg servidores` | 🌐 Lista todos os servidores onde o bot está. |
+| `/dtg teste_gfree` | 🧪 Testa o envio de um jogo grátis (Force Push). |
 
 **Configuração do Servidor:**
 | Comando | Descrição |
@@ -106,16 +109,13 @@ Este é um bot robusto e multifuncional para Discord, desenvolvido especificamen
 | `/dtg configquebrado` | Define o canal de recebimento de reports. |
 | `/dtg addpedido` | Cria o painel fixo de "Faça seu Pedido". |
 
-**Broadcast e Jogos Grátis (Multi-Server):**
+**Broadcast e Jogos Grátis (Admin Server):**
 | Comando | Descrição |
 | :--- | :--- |
 | `/dtg config_att` | Define o canal deste servidor para receber novidades do DTG. |
 | `/dtg remove_att` | Para de receber novidades do DTG. |
 | `/dtg config_game_free` | Define o canal para receber avisos de Jogos Grátis. |
 | `/dtg remove_game_free` | Para de receber avisos de Jogos Grátis. |
-| `/dtg avisotds` | 📢 Envia um aviso global para todos os servidores configurados. |
-| `/dtg servidores` | 🌐 Lista todos os servidores onde o bot está. |
-| `/dtg teste_gfree` | 🧪 Testa o envio de um jogo grátis (Force Push). |
 
 ---
 
