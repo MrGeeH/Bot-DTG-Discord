@@ -1,6 +1,6 @@
 {
   "name": "bot-dtg",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "",
   "main": "index.js",
   "scripts": {
@@ -16,7 +16,6 @@
     "discord-api-types": "^0.37.120",
     "discord.js": "^14.23.1",
     "dotenv": "^17.2.3",
-    "node-fetch": "^2.7.0",
-    "pg": "^8.17.1"
+    "node-fetch": "^2.7.0"
   }
 }

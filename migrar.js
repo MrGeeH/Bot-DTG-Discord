@@ -10,7 +10,7 @@ function gerarTags(titulo) {
     const t = titulo.toLowerCase();
     const limpo = t.replace(/[^a-z0-9 ]/g, ''); // Remove : - .
     const palavras = limpo.split(' ');
-    const sigla = palavras.map(p => p[0]).join(''); 
+    const sigla = palavras.map(p => p[0]).join(''); // Ex: Call of Duty -> cod
     
     // Gera tags combinadas
     return `${t} ${limpo} ${sigla}`;

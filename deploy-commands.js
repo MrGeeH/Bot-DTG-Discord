@@ -31,7 +31,7 @@ const commands = [
         )
         .addSubcommand(subcommand =>
             subcommand.setName('requisitos').setDescription('💻 Mostra os requisitos de sistema (PC) de um jogo.')
-                .addStringOption(option => option.setName('nome').setDescription('Nome do jogo (ex: GTA V).').setRequired(true))
+                .addStringOption(option => option.setName('nome').setDescription('Nome do jogo (ex: Bully, Grand Theft Auto V).').setRequired(true))
         )
         .addSubcommand(subcommand =>
             subcommand.setName('linkquebrado').setDescription('⚠️ Reporta um link quebrado de um jogo ou software.')
@@ -46,14 +46,25 @@ const commands = [
         // --- COMANDOS PARA ADMINISTRADORES DE OUTROS SERVIDORES ---
         .addSubcommand(subcommand =>
             subcommand.setName('config_att')
-                .setDescription('🔔 (Adm Server) Define onde as notificações de novos jogos chegarão.')
+                .setDescription('🔔 [Adm Server] Define onde as notificações de novos uploads do DTG chegarão.')
                 .addChannelOption(option =>
                     option.setName('canal').setDescription('O canal de notícias.').setRequired(true).addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
                 )
         )
         .addSubcommand(subcommand =>
             subcommand.setName('remove_att')
-                .setDescription('🔕 (Adm Server) Para de receber notificações de novos jogos neste servidor.')
+                .setDescription('🔕 [Adm Server] Para de receber notificações de uploads do DTG.')
+        )
+        .addSubcommand(subcommand =>
+            subcommand.setName('config_game_free')
+                .setDescription('🎁 [Adm Server] Avisar neste canal sobre Jogos Grátis (Steam, Epic, etc).')
+                .addChannelOption(option =>
+                    option.setName('canal').setDescription('Canal para avisos de jogos grátis.').setRequired(true).addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
+                )
+        )
+        .addSubcommand(subcommand =>
+            subcommand.setName('remove_game_free')
+                .setDescription('🔕 [Adm Server] Parar de avisar sobre Jogos Grátis.')
         )
 
         // --- COMANDOS ADMINISTRATIVOS (Dono) ---
@@ -62,10 +73,30 @@ const commands = [
                 .addUserOption(option => option.setName('usuario').setDescription('Usuário alvo.').setRequired(true))
         )
         .addSubcommand(subcommand =>
+            subcommand.setName('teste_gfree')
+                .setDescription('(Dono) Testa o envio de um Jogo Grátis (Debug).')
+                .addChannelOption(option =>
+                    option.setName('canal').setDescription('O canal para enviar o teste.').setRequired(true).addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
+                )
+        )
+        .addSubcommand(subcommand =>
+            subcommand.setName('avisotds')
+                .setDescription('(Dono) Envia um aviso oficial para todos os servidores configurados.')
+        )
+        .addSubcommand(subcommand =>
+            subcommand.setName('servidores')
+                .setDescription('(Dono) Lista todos os servidores onde o bot está.')
+        )
+        .addSubcommand(subcommand =>
             subcommand.setName('setup_stats').setDescription('(Dono) Cria contadores de estatísticas.')
                 .addStringOption(option =>
                     option.setName('tipo').setDescription('Tipo').setRequired(true)
-                    .addChoices({ name: 'Jogos', value: 'jogos' }, { name: 'Membros', value: 'membros' }, { name: 'Data', value: 'data' })
+                    .addChoices(
+                        { name: 'Jogos', value: 'jogos' }, 
+                        { name: 'Softwares', value: 'softwares' }, 
+                        { name: 'Membros', value: 'membros' }, 
+                        { name: 'Data', value: 'data' }
+                    )
                 )
         )
         .addSubcommand(subcommand =>
@@ -110,18 +141,12 @@ const rest = new REST({ version: '9' }).setToken(TOKEN);
     try {
         console.log('🔄 Iniciando processo de limpeza e atualização...');
 
-        // 1. LIMPEZA TOTAL (Remove duplicatas)
-        // Se existir ID de Guilda, removemos os comandos ESPECÍFICOS dela.
-        // Isso impede que você tenha o comando "Global" e o "Local" ao mesmo tempo.
         if (GUILD_ID) {
             console.log(`🗑️  Limpando comandos antigos da Guilda ${GUILD_ID}...`);
             await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: [] });
         }
 
-        // 2. REGISTRO GLOBAL (Único e Universal)
-        // Registramos apenas globalmente para que funcione no seu servidor E nos servidores dos outros.
         console.log('🌍 Registrando comandos GLOBALMENTE (Isso evita duplicatas, mas pode demorar alguns minutos para atualizar)...');
-        
         await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
 
         console.log('✅ Sucesso! Comandos atualizados e duplicatas removidas.');

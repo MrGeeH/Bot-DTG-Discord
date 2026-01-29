@@ -1,4 +1,4 @@
-// BY: MrGeH - Versão Final v42
+// BY: MrGeH - Versão Final v52
 
 require('dotenv').config();
 const fs = require('fs');
@@ -23,6 +23,16 @@ const DATABASE_URL = process.env.DATABASE_URL;
 const AVISO_GIF_URL = "https://media3.giphy.com/media/v1.Y2lkPTc5MGI3NjExamQxcGRlanRhNWZvNnBnNnM3MDhqYXR2MmJ2czE1ZTQ0N2NkZHJsNyZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/vqGMs1Sgv0y5gnbkMP/giphy.gif";
 const INVITE_LINK = "https://discord.gg/uKCrBCNqCT";
 
+// Logos das Lojas para o Thumbnail
+const STORE_LOGOS = {
+    'Steam': 'https://upload.wikimedia.org/wikipedia/commons/thumb/8/83/Steam_icon_logo.svg/512px-Steam_icon_logo.svg.png',
+    'Epic Games Store': 'https://upload.wikimedia.org/wikipedia/commons/thumb/3/31/Epic_Games_logo.svg/512px-Epic_Games_logo.svg.png',
+    'GOG': 'https://upload.wikimedia.org/wikipedia/commons/thumb/2/2e/GOG.com_logo.svg/512px-GOG.com_logo.svg.png',
+    'Ubisoft': 'https://upload.wikimedia.org/wikipedia/commons/thumb/7/78/Ubisoft_logo.svg/512px-Ubisoft_logo.svg.png',
+    'Itch.io': 'https://upload.wikimedia.org/wikipedia/commons/thumb/7/79/Itch.io_logo.svg/512px-Itch.io_logo.svg.png'
+};
+const DEFAULT_LOGO = 'https://cdn-icons-png.flaticon.com/512/263/263142.png';
+
 if (!TOKEN || !OWNER_ID || !process.env.DISCORD_CLIENT_ID || !DATABASE_URL) {
     console.error("Erro: .env incompleto.");
     process.exit(1);
@@ -41,6 +51,7 @@ pool.on('error', (err, client) => {
     console.error('⚠️ Erro no Pool do PostgreSQL (não fatal):', err.message);
 });
 
+// Inicialização do Banco
 pool.connect().then(async client => {
     console.log('✅ Conectado ao PostgreSQL com sucesso!');
     await client.query(`
@@ -60,6 +71,12 @@ pool.connect().then(async client => {
             channel_id TEXT NOT NULL
         );
     `);
+    await client.query(`
+        CREATE TABLE IF NOT EXISTS canais_jogos_gratis (
+            guild_id TEXT PRIMARY KEY,
+            channel_id TEXT NOT NULL
+        );
+    `);
     console.log('📦 Tabelas verificadas/criadas.');
     client.release();
 }).catch(err => console.error('❌ Erro fatal ao conectar no PostgreSQL:', err));
@@ -71,12 +88,13 @@ function loadConfig() {
         logChannelId: null, 
         welcomeChannelId: null, 
         reportChannelId: null,
-        stats: { memberCh: null, gameCh: null, dateCh: null } 
+        stats: { memberCh: null, gameCh: null, softCh: null, dateCh: null } 
     };
     if (fs.existsSync(configPath)) {
         try { 
             const current = JSON.parse(fs.readFileSync(configPath, 'utf8')); 
-            if (!current.stats) current.stats = { memberCh: null, gameCh: null, dateCh: null };
+            if (!current.stats) current.stats = { memberCh: null, gameCh: null, softCh: null, dateCh: null };
+            if (current.stats.softCh === undefined) current.stats.softCh = null;
             return { ...defaultStructure, ...current }; 
         } catch (error) { return defaultStructure; }
     }
@@ -99,36 +117,141 @@ function cleanSteamHTML(html) {
     return html.replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
 }
 
-async function updateServerStats(client) {
-    if (!config.stats.memberCh && !config.stats.gameCh && !config.stats.dateCh) return; 
+// --- FUNÇÃO DE JOGOS GRÁTIS (API GAMERPOWER) ---
+const CACHE_FILE = './free_games_cache.json';
+async function checkFreeGamesLoop(client) {
     try {
-        const guild = client.guilds.cache.first(); 
-        if (!guild) return;
+        const res = await fetch('https://www.gamerpower.com/api/giveaways?type=game&sort-by=date');
+        const giveaways = await res.json();
+
+        if (!giveaways || giveaways.length === 0) return;
+
+        const latestGames = giveaways.slice(0, 3);
+        let cachedIds = [];
+        if (fs.existsSync(CACHE_FILE)) {
+            try { cachedIds = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8')); } catch(e) {}
+        }
+
+        const newGames = latestGames.filter(g => !cachedIds.includes(g.id)).reverse(); 
+
+        if (newGames.length === 0) return; 
+
+        const dbRes = await pool.query('SELECT channel_id FROM canais_jogos_gratis');
+        const channels = dbRes.rows;
+
+        if (channels.length === 0) {
+            const allIds = latestGames.map(g => g.id);
+            fs.writeFileSync(CACHE_FILE, JSON.stringify(allIds));
+            return;
+        }
+
+        console.log(`🎁 Encontrados ${newGames.length} jogos grátis novos! Enviando...`);
+
+        for (const game of newGames) {
+            let storeIcon = DEFAULT_LOGO;
+            for (const [store, icon] of Object.entries(STORE_LOGOS)) {
+                if (game.platforms.includes(store)) { storeIcon = icon; break; }
+            }
+            const worth = game.worth === 'N/A' ? '' : `~~${game.worth}~~`;
+            const endDate = game.end_date === 'N/A' ? 'Por tempo limitado' : `até ${game.end_date}`;
+            
+            const embed = new EmbedBuilder()
+                .setTitle(game.title)
+                .setURL(game.open_giveaway_url)
+                .setDescription(`**${worth} Grátis** ${endDate}\n\n${game.description.substring(0, 300)}...`)
+                .setColor('#2B2D31')
+                .setThumbnail(storeIcon)
+                .setImage(game.image)
+                .setFooter({ text: `• DownTorrents Games •`, iconURL: client.user.displayAvatarURL() })
+                .setTimestamp();
+
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setLabel('Abrir no Navegador ↗').setStyle(ButtonStyle.Link).setURL(game.open_giveaway_url),
+                new ButtonBuilder().setLabel('Abrir Instruções').setStyle(ButtonStyle.Link).setURL(game.gamerpower_url)
+            );
+
+            for (const ch of channels) {
+                try {
+                    const channel = await client.channels.fetch(ch.channel_id);
+                    if (channel) await channel.send({ content: '@everyone', embeds: [embed], components: [row] });
+                } catch (e) {}
+            }
+            cachedIds.push(game.id);
+        }
+
+        if (cachedIds.length > 20) cachedIds = cachedIds.slice(-20);
+        fs.writeFileSync(CACHE_FILE, JSON.stringify(cachedIds));
+
+    } catch (error) {
+        console.error('Erro no checkFreeGamesLoop:', error);
+    }
+}
+
+const MAIN_GUILD_ID = '1130603259900469280'; //ID DO GRUPO, ISSO E MAIS PARA A INFORMAÇÕES DE JOGOS E SOFTWARE PARA ATUALIZAR SOMENTE NESSE ID. SE REMOVER TODA VEZ QUE USA O STATS ELE FICA COM TRÊS PONTOS NA CONTAGEM.
+
+async function updateServerStats(client) {
+    // Verifica se há alguma configuração de canal antes de prosseguir
+    if (!config.stats.memberCh && !config.stats.gameCh && !config.stats.softCh && !config.stats.dateCh) return;
+
+    try {
+        // 1. Busca ESPECIFICAMENTE o seu servidor principal
+        // Se o bot não estiver nele, ou não encontrar, ele para a função aqui.
+        const guild = await client.guilds.fetch(MAIN_GUILD_ID).catch(() => null);
+        if (!guild) return; 
+
+        // 2. Atualiza o cache de membros apenas desse servidor
         await guild.members.fetch().catch(() => {});
 
+        // --- ATUALIZAÇÃO: MEMBROS ---
         if (config.stats.memberCh) {
-            const ch = await guild.channels.fetch(config.stats.memberCh).catch(() => null);
-            if (ch) {
-                const humans = guild.members.cache.filter(member => !member.user.bot).size;
-                await ch.setName(`👥 Piratas: ${humans.toLocaleString('pt-BR')}`);
-            }
+            try {
+                // Tenta pegar o canal DENTRO desse servidor específico
+                const ch = await guild.channels.fetch(config.stats.memberCh).catch(() => null);
+                if (ch) {
+                    const humans = guild.members.cache.filter(member => !member.user.bot).size;
+                    await ch.setName(`👥 Piratas: ${humans.toLocaleString('pt-BR')}`);
+                }
+            } catch (e) {}
         }
+
+        // --- ATUALIZAÇÃO: JOGOS (Banco de Dados) ---
         if (config.stats.gameCh) {
-            const ch = await guild.channels.fetch(config.stats.gameCh).catch(() => null);
-            if (ch) {
-                const res = await pool.query('SELECT COUNT(*) FROM jogos');
-                const total = res.rows[0].count;
-                await ch.setName(`🎮 Jogos: ${total}`);
-            }
+            try {
+                const ch = await guild.channels.fetch(config.stats.gameCh).catch(() => null);
+                if (ch) {
+                    const res = await pool.query("SELECT COUNT(*) FROM jogos WHERE tipo = 'jogo'");
+                    const total = res.rows[0].count;
+                    await ch.setName(`🎮 Jogos: ${total}`);
+                }
+            } catch (e) {}
         }
+
+        // --- ATUALIZAÇÃO: SOFTWARES (Banco de Dados) ---
+        if (config.stats.softCh) {
+            try {
+                const ch = await guild.channels.fetch(config.stats.softCh).catch(() => null);
+                if (ch) {
+                    const res = await pool.query("SELECT COUNT(*) FROM jogos WHERE tipo = 'software'");
+                    const total = res.rows[0].count;
+                    await ch.setName(`💾 Softwares: ${total}`);
+                }
+            } catch (e) {}
+        }
+
+        // --- ATUALIZAÇÃO: DATA ---
         if (config.stats.dateCh) {
-            const ch = await guild.channels.fetch(config.stats.dateCh).catch(() => null);
-            if (ch) {
-                const date = new Date().toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
-                await ch.setName(`📅 Data: ${date}`);
-            }
+            try {
+                const ch = await guild.channels.fetch(config.stats.dateCh).catch(() => null);
+                if (ch) {
+                    const date = new Date().toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
+                    await ch.setName(`📅 Data: ${date}`);
+                }
+            } catch (e) {}
         }
-    } catch (error) { console.error("Erro ao atualizar stats:", error); }
+
+    } catch (error) {
+        console.error("Erro ao atualizar stats do servidor principal:", error);
+    }
 }
 
 async function broadcastNewContent(client, title, type, imgUrl, originalMessageUrl) {
@@ -139,8 +262,8 @@ async function broadcastNewContent(client, title, type, imgUrl, originalMessageU
 
         console.log(`📡 Iniciando broadcast para ${channels.length} canais externos...`);
 
-        const tipoTextoPT = type === 'jogo' ? 'um **Novo Jogo**' : 'um **Novo Software**';
-        const tipoTextoEN = type === 'jogo' ? 'a **New Game**' : 'a **New Software**';
+        const tipoTextoPT = type === 'jogo' ? 'um Novo Jogo' : 'um Novo Software';
+        const tipoTextoEN = type === 'jogo' ? 'a New Game' : 'a New Software';
         
         const description = `🇧🇷 Foi Adicionado ${tipoTextoPT} no **DownTorrents Games**!\n\n` +
                             `**${title}**\n\n` +
@@ -156,11 +279,11 @@ async function broadcastNewContent(client, title, type, imgUrl, originalMessageU
             .setColor(getRandomColor())
             .setThumbnail(imgUrl)
             .setImage(AVISO_GIF_URL)
-            .setFooter({ text: 'DownTorrents Games - By: MrGeH' });
+            .setFooter({ text: 'DownTorrents Games - By: MrGeH', iconURL: client.user.displayAvatarURL() });
 
         const btn = new ActionRowBuilder().addComponents(
             new ButtonBuilder()
-                .setLabel('Ir para o Download / Go to Download')
+                .setLabel('Ir para o Download | Go to Download')
                 .setStyle(ButtonStyle.Link)
                 .setURL(originalMessageUrl)
         );
@@ -172,7 +295,11 @@ async function broadcastNewContent(client, title, type, imgUrl, originalMessageU
             try {
                 const channel = await client.channels.fetch(row.channel_id);
                 if (channel) {
-                    await channel.send({ embeds: [embed], components: [btn] });
+                    await channel.send({ 
+                        content: '📢 **Nova Atualização Disponível!** @everyone', 
+                        embeds: [embed], 
+                        components: [btn] 
+                    });
                     sucesso++;
                 } else { falha++; }
             } catch (err) { falha++; }
@@ -182,10 +309,10 @@ async function broadcastNewContent(client, title, type, imgUrl, originalMessageU
 }
 
 const FAQ_DATA = {
-    'instalar': { title: '🛠️ Como Instalar / How to Install', desc: '🇧🇷\n1. Baixe o arquivo...\n\n🇺🇸\n1. Download the file...' },
-    'dll': { title: '⚠️ Erro de DLL / DLL Error', desc: '🇧🇷\nErro de DLL...\n\n🇺🇸\nDLL errors...' },
-    'online': { title: '🌐 Jogar Online / Play Online', desc: '🇧🇷 Jogos que funcionam online...\n\n🇺🇸 Games that work online...' },
-    'pedido': { title: '📦 Como Pedir / How to Request', desc: '🇧🇷 Vá ao canal de pedidos...\n\n🇺🇸 Go to the order channel...' }
+    'instalar': { title: '🛠️ Como Instalar | How to Install', desc: '🇧🇷\n1. Baixe o arquivo...\n\n🇺🇸\n1. Download the file...' },
+    'dll': { title: '⚠️ Erro de DLL | DLL Error', desc: '🇧🇷\nErro de DLL...\n\n🇺🇸\nDLL errors...' },
+    'online': { title: '🌐 Jogar Online | Play Online', desc: '🇧🇷 Jogos que funcionam online...\n\n🇺🇸 Games that work online...' },
+    'pedido': { title: '📦 Como Pedir | How to Request', desc: '🇧🇷 Vá ao canal de pedidos...\n\n🇺🇸 Go to the order channel...' }
 };
 
 const embedColors = ['#5865F2', '#0099ff', '#41B454', '#E67E22', '#E91E63', '#9B59B6', '#F1C40F', '#1ABC9C', '#2ECC71', '#3498DB', '#E74C3C'];
@@ -201,11 +328,26 @@ client.activeChats = new Collection();
 
 client.on('clientReady', () => { 
     console.log(`Bot ${client.user.tag} está online!`);
+    
     updateServerStats(client); 
     setInterval(() => updateServerStats(client), 600000); 
+    
+    checkFreeGamesLoop(client);
+    setInterval(() => checkFreeGamesLoop(client), 900000);
+
     let i = 0;
-    const activities = ['Melhor Discord de Jogos', 'Criado por MrGeH!', 'Use /dtg linkquebrado', 'Use /dtg requisitos'];
-    setInterval(() => { client.user.setActivity(activities[i++ % activities.length], { type: ActivityType.Playing }); }, 15000);
+    // LISTA DE STATUS
+    setInterval(() => { 
+        const serverCount = client.guilds.cache.size;
+        const activities = [
+            'Melhor Discord de Jogos', 
+            'Criado por MrGeH!', 
+            'Use /dtg linkquebrado', 
+            'Use /dtg requisitos',
+            `Ativo em ${serverCount} Servers`
+        ];
+        client.user.setActivity(activities[i++ % activities.length], { type: ActivityType.Playing }); 
+    }, 15000);
 });
 
 client.on('guildMemberAdd', async member => {
@@ -218,7 +360,7 @@ client.on('guildMemberAdd', async member => {
     try {
         const res = await pool.query('SELECT titulo, link, tipo FROM jogos ORDER BY id DESC LIMIT 5');
         if (res.rows.length > 0) {
-            desc += `---------------------------------\n**🔥 Últimos Lançamentos / Last Releases:**\n`;
+            desc += `---------------------------------\n**🔥 Últimos Lançamentos | Last Releases:**\n`;
             res.rows.forEach(g => desc += `• [${g.titulo}](${g.link}) (${g.tipo === 'jogo' ? '🎮' : '💾'})\n`);
         }
     } catch (e) {}
@@ -230,6 +372,7 @@ client.on('guildMemberRemove', () => { updateServerStats(client); });
 
 client.on('messageCreate', async message => {
     if (message.author.bot) return;
+    
     if (message.author.id !== OWNER_ID && !message.member?.permissions.has(PermissionFlagsBits.ManageMessages)) {
         if (message.content.toLowerCase().includes('discord.gg/') || (message.content.includes('http') && message.attachments.size === 0)) {
             await message.delete().catch(()=>{});
@@ -238,6 +381,7 @@ client.on('messageCreate', async message => {
             return;
         }
     }
+
     if (message.channel.type === ChannelType.DM) {
         const cId = client.activeChats.get(message.author.id);
         if (cId) {
@@ -259,6 +403,7 @@ client.on('messageCreate', async message => {
         }
         return;
     }
+
     if (client.tempAddJogoData.has(message.author.id)) {
         const data = client.tempAddJogoData.get(message.author.id);
         if (data.status === 'awaiting_image') {
@@ -270,7 +415,11 @@ client.on('messageCreate', async message => {
                     await pool.query('INSERT INTO jogos (titulo, link, tipo, obs, tags_busca) VALUES ($1, $2, $3, $4, $5)', [data.title, data.link, data.type, data.obs||'', tags]);
                     const postedMessage = await sendGameOrSoftwareEmbed(data.interaction, data.primaryChannelId, data.notificationChannelId, data.title, data.obs, data.link, att.url, data.type);
                     updateServerStats(client);
-                    if (postedMessage) broadcastNewContent(client, data.title, data.type, att.url, postedMessage.url);
+                    
+                    if (postedMessage) {
+                        broadcastNewContent(client, data.title, data.type, att.url, postedMessage.url);
+                    }
+
                     if(data.waitingMessageId) (await message.channel.messages.fetch(data.waitingMessageId)).delete().catch(()=>{});
                     await message.react('✅');
                 } catch(e) { await message.reply('❌ Erro DB ou Broadcast.'); }
@@ -278,6 +427,7 @@ client.on('messageCreate', async message => {
             } else { await message.reply('❌ Mande imagem.'); }
         }
     }
+
     if (!message.content.startsWith(PREFIX)) return;
     const args = message.content.slice(PREFIX.length).trim().split(/ +/);
     const cmd = args.shift().toLowerCase();
@@ -291,24 +441,19 @@ client.on('interactionCreate', async interaction => {
         return;
     }
 
-    // --- CORREÇÃO DO MENU DE SELEÇÃO E VISUAL ---
     if (interaction.isStringSelectMenu()) {
         if (interaction.customId.startsWith('pedido_platform_select_')) {
             const parts = interaction.customId.split('_');
             const u = parts[3];
-            const l = parts[4]; // lang
+            const l = parts[4];
             if (interaction.user.id !== u) return interaction.reply({content:'❌', flags:[MessageFlags.Ephemeral]});
-            
             const d = client.tempPedidoData.get(u) || {};
             d.platform = interaction.values[0];
             client.tempPedidoData.set(u, d);
-            
-            // RECONSTRÓI O MENU PARA MOSTRAR A SELEÇÃO
             const btn = new ButtonBuilder().setCustomId(`pedido_continue_button_${u}_${l}`).setLabel(l==='en'?'Continue':'Continuar').setStyle(ButtonStyle.Success).setDisabled(!(d.platform && d.online));
-            
             await interaction.update({ components: [
-                getPedidoPlatformSelectMenu(u, l, d.platform), // Passa o valor selecionado
-                getPedidoOnlineSelectMenu(u, l, d.online),     // Passa o valor (se houver)
+                getPedidoPlatformSelectMenu(u, l, d.platform), 
+                getPedidoOnlineSelectMenu(u, l, d.online), 
                 new ActionRowBuilder().addComponents(btn)
             ] });
         }
@@ -317,16 +462,13 @@ client.on('interactionCreate', async interaction => {
             const u = parts[3];
             const l = parts[4];
             if (interaction.user.id !== u) return interaction.reply({content:'❌', flags:[MessageFlags.Ephemeral]});
-            
             const d = client.tempPedidoData.get(u) || {};
             d.online = interaction.values[0];
             client.tempPedidoData.set(u, d);
-
             const btn = new ButtonBuilder().setCustomId(`pedido_continue_button_${u}_${l}`).setLabel(l==='en'?'Continue':'Continuar').setStyle(ButtonStyle.Success).setDisabled(!(d.platform && d.online));
-            
             await interaction.update({ components: [
                 getPedidoPlatformSelectMenu(u, l, d.platform),
-                getPedidoOnlineSelectMenu(u, l, d.online), // Passa o valor selecionado
+                getPedidoOnlineSelectMenu(u, l, d.online),
                 new ActionRowBuilder().addComponents(btn)
             ] });
         }
@@ -342,27 +484,93 @@ client.on('interactionCreate', async interaction => {
         const { commandName, options } = interaction;
         if (commandName === 'dtg') {
             const subcommand = options.getSubcommand();
-            const ownerOnly = ['aviso', 'addsoft', 'addjogo', 'limpar', 'addpedido', 'setup_faq', 'config_boasvindas', 'chat', 'configquebrado', 'setup_stats'];
+            const ownerOnly = ['aviso', 'addsoft', 'addjogo', 'limpar', 'addpedido', 'setup_faq', 'config_boasvindas', 'chat', 'configquebrado', 'setup_stats', 'teste_gfree', 'avisotds', 'servidores'];
+            
             if (ownerOnly.includes(subcommand) && interaction.user.id !== OWNER_ID) {
                 return interaction.reply({ content: '❌ Somente o Dono do Bot pode usar esse comando!', flags: [MessageFlags.Ephemeral] });
             }
-            if (subcommand === 'config_att' || subcommand === 'remove_att') {
+            
+            const admCommands = ['config_att', 'remove_att', 'config_game_free', 'remove_game_free'];
+            if (admCommands.includes(subcommand)) {
                 if (!interaction.memberPermissions.has(PermissionFlagsBits.Administrator)) {
-                    return interaction.reply({ content: '❌ Você precisa ser **Administrador** deste servidor.', flags: [MessageFlags.Ephemeral] });
+                    return interaction.reply({ content: '❌ Você precisa ser **Administrador** deste servidor para usar este comando.', flags: [MessageFlags.Ephemeral] });
                 }
                 if (subcommand === 'config_att') {
                     const channel = options.getChannel('canal');
                     try {
                         await pool.query(`INSERT INTO canais_externos (guild_id, channel_id) VALUES ($1, $2) ON CONFLICT (guild_id) DO UPDATE SET channel_id = $2`, [interaction.guildId, channel.id]);
-                        return interaction.reply({ content: `✅ Configurado! Notícias em <#${channel.id}>.` });
+                        return interaction.reply({ content: `✅ Configurado! Notícias DTG em <#${channel.id}>.` });
                     } catch (e) { return interaction.reply({ content: '❌ Erro ao salvar.', flags: [MessageFlags.Ephemeral] }); }
-                } else {
+                }
+                else if (subcommand === 'remove_att') {
                     try {
                         const res = await pool.query('DELETE FROM canais_externos WHERE guild_id = $1', [interaction.guildId]);
-                        return interaction.reply({ content: res.rowCount > 0 ? `✅ Configuração removida!` : `⚠️ Nenhuma configuração encontrada.` });
+                        return interaction.reply({ content: res.rowCount > 0 ? `✅ Notificações DTG removidas!` : `⚠️ Nenhuma configuração encontrada.` });
+                    } catch (e) { return interaction.reply({ content: '❌ Erro.', flags: [MessageFlags.Ephemeral] }); }
+                }
+                else if (subcommand === 'config_game_free') {
+                    const channel = options.getChannel('canal');
+                    try {
+                        await pool.query(`INSERT INTO canais_jogos_gratis (guild_id, channel_id) VALUES ($1, $2) ON CONFLICT (guild_id) DO UPDATE SET channel_id = $2`, [interaction.guildId, channel.id]);
+                        return interaction.reply({ content: `🎁 Configurado! **Jogos Grátis** serão avisados em <#${channel.id}>.` });
+                    } catch (e) { return interaction.reply({ content: '❌ Erro ao salvar.', flags: [MessageFlags.Ephemeral] }); }
+                }
+                else if (subcommand === 'remove_game_free') {
+                    try {
+                        const res = await pool.query('DELETE FROM canais_jogos_gratis WHERE guild_id = $1', [interaction.guildId]);
+                        return interaction.reply({ content: res.rowCount > 0 ? `🎁 Avisos de Jogos Grátis removidos!` : `⚠️ Nenhuma configuração encontrada.` });
                     } catch (e) { return interaction.reply({ content: '❌ Erro.', flags: [MessageFlags.Ephemeral] }); }
                 }
             }
+
+            // ===============================================
+            // /dtg servidores
+            // ===============================================
+            if (subcommand === 'servidores') {
+                if (interaction.user.id !== OWNER_ID) return interaction.reply({ content: '❌ Apenas o dono.', flags: [MessageFlags.Ephemeral] });
+                
+                const guilds = client.guilds.cache.map(guild => `• ${guild.name} (ID: ${guild.id}) - ${guild.memberCount} membros`).join('\n');
+                
+                // Divide se for muito grande
+                if (guilds.length > 2000) {
+                    const parts = guilds.match(/[\s\S]{1,1900}/g);
+                    await interaction.reply({ content: `**🌐 Estou em ${client.guilds.cache.size} servidores:**\n(Lista parcial 1)`, flags: [MessageFlags.Ephemeral] });
+                    for (const part of parts) {
+                        await interaction.followUp({ content: part, flags: [MessageFlags.Ephemeral] });
+                    }
+                } else {
+                    await interaction.reply({ content: `**🌐 Estou em ${client.guilds.cache.size} servidores:**\n\n${guilds}`, flags: [MessageFlags.Ephemeral] });
+                }
+            }
+
+            if (subcommand === 'teste_gfree') {
+                if (interaction.user.id !== OWNER_ID) return interaction.reply({ content: '❌ Apenas o dono.', flags: [MessageFlags.Ephemeral] });
+                await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
+                const targetChannel = options.getChannel('canal');
+                try {
+                    const res = await fetch('https://www.gamerpower.com/api/giveaways?type=game&sort-by=date');
+                    const giveaways = await res.json();
+                    if (!giveaways || giveaways.length === 0) return interaction.editReply('❌ Nenhum jogo encontrado na API agora.');
+                    const game = giveaways[0];
+                    let storeIcon = DEFAULT_LOGO;
+                    for (const [store, icon] of Object.entries(STORE_LOGOS)) {
+                        if (game.platforms.includes(store)) { storeIcon = icon; break; }
+                    }
+                    const worth = game.worth === 'N/A' ? '' : `~~${game.worth}~~`;
+                    const endDate = game.end_date === 'N/A' ? 'Por tempo limitado' : `até ${game.end_date}`;
+                    const embed = new EmbedBuilder().setTitle(game.title).setURL(game.open_giveaway_url).setDescription(`**${worth} Grátis** ${endDate}\n\n${game.description.substring(0, 300)}...`).setColor('#2B2D31').setThumbnail(storeIcon).setImage(game.image).setFooter({ text: 'via GamerPower • DownTorrents Games Bot', iconURL: client.user.displayAvatarURL() }).setTimestamp();
+                    const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setLabel('Abrir no Navegador ↗').setStyle(ButtonStyle.Link).setURL(game.open_giveaway_url), new ButtonBuilder().setLabel('Abrir Instruções').setStyle(ButtonStyle.Link).setURL(game.gamerpower_url));
+                    await targetChannel.send({ content: '@everyone', embeds: [embed], components: [row] });
+                    await interaction.editReply(`✅ Teste enviado para <#${targetChannel.id}>!`);
+                } catch (e) { console.error(e); await interaction.editReply('❌ Erro ao buscar ou enviar.'); }
+            }
+            if (subcommand === 'avisotds') {
+                if (interaction.user.id !== OWNER_ID) return interaction.reply({ content: '❌ Apenas o dono.', flags: [MessageFlags.Ephemeral] });
+                const modal = new ModalBuilder().setCustomId('avisotds_modal').setTitle('Aviso Global (Todos os Servidores)');
+                modal.addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('avisotds_titulo').setLabel('Título').setStyle(TextInputStyle.Short).setRequired(true)), new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('avisotds_corpo').setLabel('Mensagem').setStyle(TextInputStyle.Paragraph).setRequired(true)));
+                await interaction.showModal(modal);
+            }
+
             if (subcommand === 'ajuda') await handleAjudaSlash(interaction);
             else if (subcommand === 'buscar') {
                 const termo = options.getString('nome').toLowerCase().trim();
@@ -382,6 +590,7 @@ client.on('interactionCreate', async interaction => {
                     const perms = [{ id: guild.id, deny: [PermissionFlagsBits.Connect], allow: [PermissionFlagsBits.ViewChannel] }];
                     let createdChannel;
                     if (tipo === 'jogos') { createdChannel = await guild.channels.create({ name: '🎮 Jogos: ...', type: ChannelType.GuildVoice, permissionOverwrites: perms }); config.stats.gameCh = createdChannel.id; }
+                    else if (tipo === 'softwares') { createdChannel = await guild.channels.create({ name: '💾 Softwares: ...', type: ChannelType.GuildVoice, permissionOverwrites: perms }); config.stats.softCh = createdChannel.id; }
                     else if (tipo === 'membros') { createdChannel = await guild.channels.create({ name: '👥 Membros: ...', type: ChannelType.GuildVoice, permissionOverwrites: perms }); config.stats.memberCh = createdChannel.id; }
                     else if (tipo === 'data') { createdChannel = await guild.channels.create({ name: '📅 Data: ...', type: ChannelType.GuildVoice, permissionOverwrites: perms }); config.stats.dateCh = createdChannel.id; }
                     saveConfig(); await updateServerStats(client);
@@ -439,7 +648,36 @@ client.on('interactionCreate', async interaction => {
             }
             else if (subcommand === 'limpar') await handleLimparSlash(interaction);
             else if (subcommand === 'config_boasvindas') { config.welcomeChannelId = options.getChannel('canal').id; saveConfig(); await interaction.reply({ content: '✅ Configurado!', flags: [MessageFlags.Ephemeral] }); }
-            else if (subcommand === 'convite') await interaction.reply({ content: `${AVISO_GIF_URL}\n\n**Convite:** ${INVITE_LINK}` });
+            
+            // ============================================
+            // NOVO: CONVITE PERSONALIZADO
+            // ============================================
+            else if (subcommand === 'convite') {
+                const embed = new EmbedBuilder()
+                    .setTitle('🏴‍☠️ Junte-se à Tripulação! | Join the Crew!')
+                    .setDescription(
+                        `🇧🇷 **Você foi convidado para o DownTorrents Games!**\n` +
+                        `O melhor lugar para encontrar jogos, softwares e muito mais.\n` +
+                        `Clique no botão abaixo para entrar!\n\n` +
+                        `---------------------------------\n\n` +
+                        `🇺🇸 **You have been invited to DownTorrents Games!**\n` +
+                        `The best place to find games, software, and much more.\n` +
+                        `Click the button below to join!`
+                    )
+                    .setColor(getRandomColor())
+                    .setThumbnail(client.user.displayAvatarURL())
+                    .setImage(AVISO_GIF_URL)
+                    .setFooter({ text: 'DownTorrents Games • MrGeH' });
+
+                const row = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder()
+                        .setLabel('Entrar no Servidor | Join Server')
+                        .setStyle(ButtonStyle.Link)
+                        .setURL(INVITE_LINK)
+                );
+
+                await interaction.reply({ embeds: [embed], components: [row] });
+            }
         }
     }
     
@@ -451,7 +689,6 @@ client.on('interactionCreate', async interaction => {
              if (interaction.user.id !== userId) return interaction.reply({ content: '❌', flags: [MessageFlags.Ephemeral] });
              const d = client.tempPedidoData.get(userId);
              if (!d || !d.platform) return interaction.reply({ content: '❌ Selecione as opções.', flags: [MessageFlags.Ephemeral] });
-             // NÃO usamos deferUpdate aqui porque vamos abrir um Modal
              await handlePedidoModalFinal(interaction, d.platform, d.online, isEn);
         }
         if (interaction.customId.startsWith('start_chat_')) await createChatChannel(interaction, interaction.customId.split('_')[2]);
@@ -459,9 +696,19 @@ client.on('interactionCreate', async interaction => {
             const tId = interaction.customId.split('_')[2]; const c = interaction.channel;
             await interaction.reply({ content: '🔒 Fechando...', flags: [MessageFlags.Ephemeral] });
             try {
-                if (config.logChannelId) { const msgs = await c.messages.fetch({limit:100}); const txt=msgs.reverse().map(m=>`[${m.createdAt.toLocaleString()}] ${m.author.tag}: ${m.content}`).join('\n'); const l=await client.channels.fetch(config.logChannelId); if(l) l.send({content:`Backup <@${tId}>`, files:[{attachment:Buffer.from(txt),name:'log.txt'}]}); }
+                if (config.logChannelId) { 
+                    const msgs = await c.messages.fetch({limit:100}); 
+                    const txt = msgs.reverse().map(m => {
+                        const time = m.createdAt.toLocaleString();
+                        const author = m.author.id === client.user.id ? 'Staff (Bot)' : m.author.tag;
+                        const content = m.content || '[Arquivo/Embed]';
+                        return `[${time}] ${author}: ${content}`;
+                    }).join('\n');
+                    const l = await client.channels.fetch(config.logChannelId); 
+                    if (l) l.send({ content: `📑 **Backup do Chat** com <@${tId}>`, files: [{ attachment: Buffer.from(txt), name: `log_${tId}.txt` }] }); 
+                }
                 client.activeChats.delete(tId); client.activeChats.delete(c.id); setTimeout(()=>c.delete(), 5000);
-            } catch(e){}
+            } catch(e) { console.error('Erro no backup:', e); }
         }
         if (interaction.customId.startsWith('pedido_res|')) {
             if (interaction.user.id !== OWNER_ID) return interaction.reply({ content: '❌', flags: [MessageFlags.Ephemeral] });
@@ -470,7 +717,7 @@ client.on('interactionCreate', async interaction => {
             try { 
                 const u = await client.users.fetch(uId); 
                 const title = lang === 'en' ? (action==='added'?"ADDED!":"NOTICE") : (action==='added'?"ADICIONADO!":"AVISO");
-                const body = lang === 'en' ? (action==='added'?`Request **${gName}** fulfilled!`:`Request **${gName}** rejected.`) : (action==='added'?`Pedido **${gName}** atendido!`:`Pedido **${gName}** rejeitado (Sem Crack).`);
+                const body = lang === 'en' ? (action==='added'?`Request **${gName}** fulfilled!`:`Request **${gName}** rejected.`) : (action==='added'?`Pedido **${gName}** atendido!`:`Pedido **${gName}** negado (Sem Crack).`);
                 await u.send(`${title}\n\n${body}\n\n**MrGeH**`);
                 await interaction.message.edit({ components: [] }); 
                 await interaction.channel.send(`*Resolvido por ${interaction.user.tag}*`);
@@ -507,7 +754,7 @@ client.on('interactionCreate', async interaction => {
             const safeName = name.length > 50 ? name.substring(0,50)+'...' : name;
             const btn = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`fix_link|${interaction.user.id}|${safeName.replace(/\|/g,'-')}`).setLabel('Link Corrigido').setStyle(ButtonStyle.Success).setEmoji('🔧'));
             await rc.send({ embeds: [embed], components: [btn] });
-            await interaction.editReply('✅ Reporte enviado! / Report sent!');
+            await interaction.editReply('✅ Reporte enviado! | Report sent!');
         }
 
         else if (customId.startsWith('pedido_modal_final|')) {
@@ -550,10 +797,10 @@ client.on('interactionCreate', async interaction => {
             try { 
                 const resTitle = await translate(tit, {to:'en'});
                 const resBody = await translate(corpo, {to:'en'});
-                desc = `🇧🇷 ${corpo}\n\n---------------------\n\n🇺🇸 **${resTitle.text}**\n\n${resBody.text}`;
+                desc = `🇧🇷 **${tit}**\n${corpo}\n\n---------------------------------\n\n🇺🇸 **${resTitle.text}**\n${resBody.text}`;
             } catch(e){}
 
-            const embed = new EmbedBuilder().setTitle(`🇧🇷 ${tit}`).setDescription(desc).setColor(getRandomColor()).setThumbnail(AVISO_GIF_URL);
+            const embed = new EmbedBuilder().setTitle('📢 Aviso Oficial | Official Announcement').setDescription(desc).setColor(getRandomColor()).setThumbnail(AVISO_GIF_URL).setFooter({ text: 'DownTorrents Games • Admin' });
             
             try {
                 const c = await client.channels.fetch(targetChannelId);
@@ -561,6 +808,45 @@ client.on('interactionCreate', async interaction => {
                 await interaction.editReply('✅ Enviado.');
             } catch(e){
                 await interaction.editReply('❌ Erro: Canal não encontrado.');
+            }
+        }
+        else if (customId === 'avisotds_modal') {
+            await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
+            const tit = fields.getTextInputValue('avisotds_titulo');
+            const corpo = fields.getTextInputValue('avisotds_corpo');
+
+            try {
+                const resTitle = await translate(tit, {to:'en'});
+                const resBody = await translate(corpo, {to:'en'});
+                
+                const description = `🇧🇷 **${tit}**\n${corpo}\n\n---------------------------------\n\n🇺🇸 **${resTitle.text}**\n${resBody.text}`;
+
+                const embed = new EmbedBuilder()
+                    .setTitle('📢 Aviso Oficial | Official Announcement')
+                    .setDescription(description)
+                    .setColor(getRandomColor())
+                    .setThumbnail(AVISO_GIF_URL)
+                    .setFooter({ text: '• DownTorrents Games • MrGeH' });
+
+                const res = await pool.query('SELECT channel_id FROM canais_externos');
+                const channels = res.rows;
+
+                let count = 0;
+                for (const row of channels) {
+                    try {
+                        const channel = await client.channels.fetch(row.channel_id);
+                        if (channel) {
+                            await channel.send({ content: '@everyone', embeds: [embed] });
+                            count++;
+                        }
+                    } catch (e) {}
+                }
+
+                await interaction.editReply(`✅ Aviso enviado para **${count}** servidores!`);
+
+            } catch (e) {
+                console.error(e);
+                await interaction.editReply('❌ Erro ao processar o aviso.');
             }
         }
     }
@@ -588,7 +874,6 @@ async function handleAvisoChat(i) {
     await i.showModal(m);
 }
 
-// CORREÇÃO: Lógica do Modal REIMPLEMENTADA (Estava faltando)
 async function handlePedidoModalFinal(i, p, o, isEn) {
     const u = i.user.id; 
     const langCode = isEn ? 'en' : 'pt';
@@ -621,7 +906,6 @@ async function createChatChannel(i, tId) {
     } catch(e) { i.editReply('❌ Erro.'); }
 }
 
-// CORREÇÃO: Helper para reconstruir o Select com o valor padrão marcado
 function getPedidoPlatformSelectMenu(u, l, v) { 
     const opts = [
         {l:'PC',v:'PC'}, {l:'SOFTWARE',v:'SOFTWARE'}, {l:'PS4',v:'PS4'}, {l:'PS5',v:'PS5'},{l:'PS3',v:'PS3'},

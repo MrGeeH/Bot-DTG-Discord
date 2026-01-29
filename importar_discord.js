@@ -9,8 +9,7 @@ const { Pool } = require('pg');
 // Adicione aqui os IDs das categorias que você quer escanear
 const CATEGORIAS_PARA_ESCANEAR = [
     '', // Categoria Jogos Coop/Online
-    '',  // Categoria Jogos (Alfabeto)
-    '' //SOFTWARE
+    ''  // Categoria Jogos (Alfabeto)
 ];
 
 const QUANTIDADE_POR_CANAL = 100; // Quantas mensagens ler em CADA canal
