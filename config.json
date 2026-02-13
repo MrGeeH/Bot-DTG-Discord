@@ -1,6 +1,12 @@
 {
-  "presentationChannelId": "",
-  "logChannelId": "",
-  "welcomeChannelId": "",
-  "reportChannelId": ""
+  "presentationChannelId": "1426185127959986298",
+  "logChannelId": "1425905077021049012",
+  "welcomeChannelId": "1130603585269415947",
+  "reportChannelId": "1461692199187124255",
+  "stats": {
+    "memberCh": "1465862677472612412",
+    "gameCh": "1465862589631172788",
+    "dateCh": null,
+    "softCh": "1465862529640304652"
+  }
 }

@@ -1,4 +1,4 @@
-// BY: MrGeH - Versão Final v52
+// BY: MrGeH - Versão Final v53
 
 require('dotenv').config();
 const fs = require('fs');
@@ -77,6 +77,13 @@ pool.connect().then(async client => {
             channel_id TEXT NOT NULL
         );
     `);
+    // --- NOVO: Tabela para Configuração de Anti-Link ---
+    await client.query(`
+        CREATE TABLE IF NOT EXISTS anti_link_config (
+            guild_id TEXT PRIMARY KEY
+        );
+    `);
+    // ---------------------------------------------------
     console.log('📦 Tabelas verificadas/criadas.');
     client.release();
 }).catch(err => console.error('❌ Erro fatal ao conectar no PostgreSQL:', err));
@@ -187,7 +194,7 @@ async function checkFreeGamesLoop(client) {
     }
 }
 
-const MAIN_GUILD_ID = '1130603259900469280'; //ID DO GRUPO, ISSO E MAIS PARA A INFORMAÇÕES DE JOGOS E SOFTWARE PARA ATUALIZAR SOMENTE NESSE ID. SE REMOVER TODA VEZ QUE USA O STATS ELE FICA COM TRÊS PONTOS NA CONTAGEM.
+const MAIN_GUILD_ID = '1130603259900469280';
 
 async function updateServerStats(client) {
     // Verifica se há alguma configuração de canal antes de prosseguir
@@ -309,6 +316,7 @@ async function broadcastNewContent(client, title, type, imgUrl, originalMessageU
 }
 
 const FAQ_DATA = {
+    'encurta': { title: '🔗 Como Passar no Encurtador de Links | How to Get Through a Link Shortener', desc: '🇧🇷\n1. Para Links do stfly na primeira janela click em "Click here to proceed". **Lembrando que toda vez que abrir uma aba nova você que fechar.**\n2. após isso irá a mesma aba mudara para uma tela com o print do link a seguir:\nhttps://biovetro.net/wp-content/uploads/2026/01/google_results.jpg\nVocê vai ver que em baixo do print tem um botão "Continue" Click nele e na mesma aba ele ira mudar para a pesquisa do google.\n\n3. No print ele da a instrução de você abrir o primeiro link da pesquisa com o site biovetro .net, então abra.\n4. Agora e so seguir os botões preto com "Begin", "Click here to verify". **Observação:** Tem um que ele pede para click na imagem abaixo, de um click no anuncio fecha aba e vá até o final da pagina e click no mesmo botão que ele vai continuar.\n5. Após passar por todo o encurtador ele tem que te levar ou para o **MediaFire** ou **Google Drive**, as vezes leva para Gofile\n\n**----------------------------------------------**\n\n🇺🇸\nFor stfly links, click "Click here to proceed" in the first window. Remember that every time a new tab opens, you must close it.\n2. After that, the same tab will change to a screen matching the following screenshot:\nhttps://biovetro.net/wp-content/uploads/2026/01/google_results.jpg\nYou will see a "Continue" button below the screenshot. Click it, and the same tab will redirect to a Google search.\n\n3. The screenshot provides instructions to open the first search result with the website biovetro .net; go ahead and open it.\n4. Now, just follow the black buttons labeled "Begin" and "Click here to verify." Note: There is one part where it asks you to click the image below; click the ad, close the new tab, scroll to the bottom of the page, and click the same button again to continue.\n5. After completing the entire shortener process, it should take you to either MediaFire or Google Drive (sometimes it leads to Gofile).\n' },
     'instalar': { title: '🛠️ Como Instalar | How to Install', desc: '🇧🇷\n1. Baixe o arquivo...\n\n🇺🇸\n1. Download the file...' },
     'dll': { title: '⚠️ Erro de DLL | DLL Error', desc: '🇧🇷\nErro de DLL...\n\n🇺🇸\nDLL errors...' },
     'online': { title: '🌐 Jogar Online | Play Online', desc: '🇧🇷 Jogos que funcionam online...\n\n🇺🇸 Games that work online...' },
@@ -325,10 +333,23 @@ const client = new Client({
 client.tempPedidoData = new Collection();
 client.tempAddJogoData = new Collection();
 client.activeChats = new Collection();
+// --- NOVO: Cache para armazenar servidores com Anti-Link ativado ---
+client.antiLinkGuilds = new Set();
+// -------------------------------------------------------------------
 
-client.on('clientReady', () => { 
+client.on('clientReady', async () => { 
     console.log(`Bot ${client.user.tag} está online!`);
     
+    // --- NOVO: Carregar configurações de Anti-Link do DB para a memória ---
+    try {
+        const res = await pool.query('SELECT guild_id FROM anti_link_config');
+        res.rows.forEach(row => client.antiLinkGuilds.add(row.guild_id));
+        console.log(`🔒 Anti-Link ativo em ${client.antiLinkGuilds.size} servidores.`);
+    } catch (e) {
+        console.error('Erro ao carregar anti_link_config:', e);
+    }
+    // ---------------------------------------------------------------------
+
     updateServerStats(client); 
     setInterval(() => updateServerStats(client), 600000); 
     
@@ -336,7 +357,7 @@ client.on('clientReady', () => {
     setInterval(() => checkFreeGamesLoop(client), 900000);
 
     let i = 0;
-    // LISTA DE STATUS
+    // LISTA DE STATUS ATUALIZADA (Inclui contagem de servers)
     setInterval(() => { 
         const serverCount = client.guilds.cache.size;
         const activities = [
@@ -344,7 +365,7 @@ client.on('clientReady', () => {
             'Criado por MrGeH!', 
             'Use /dtg linkquebrado', 
             'Use /dtg requisitos',
-            `Ativo em ${serverCount} Servers`
+            `Ativo em ${serverCount} Servers` // NOVO STATUS
         ];
         client.user.setActivity(activities[i++ % activities.length], { type: ActivityType.Playing }); 
     }, 15000);
@@ -360,7 +381,7 @@ client.on('guildMemberAdd', async member => {
     try {
         const res = await pool.query('SELECT titulo, link, tipo FROM jogos ORDER BY id DESC LIMIT 5');
         if (res.rows.length > 0) {
-            desc += `---------------------------------\n**🔥 Últimos Lançamentos | Last Releases:**\n`;
+            desc += `---------------------------------\n**🔥 Últimos Lançamentos / Last Releases:**\n`;
             res.rows.forEach(g => desc += `• [${g.titulo}](${g.link}) (${g.tipo === 'jogo' ? '🎮' : '💾'})\n`);
         }
     } catch (e) {}
@@ -373,14 +394,21 @@ client.on('guildMemberRemove', () => { updateServerStats(client); });
 client.on('messageCreate', async message => {
     if (message.author.bot) return;
     
-    if (message.author.id !== OWNER_ID && !message.member?.permissions.has(PermissionFlagsBits.ManageMessages)) {
-        if (message.content.toLowerCase().includes('discord.gg/') || (message.content.includes('http') && message.attachments.size === 0)) {
-            await message.delete().catch(()=>{});
-            const w = await message.channel.send(`🚫 ${message.author}, links não permitidos!`);
-            setTimeout(()=>w.delete().catch(()=>{}), 5000);
-            return;
+    // --- LÓGICA DO ANTI-LINK DINÂMICO ---
+    // Verifica se o servidor atual está na lista de servidores protegidos
+    if (message.guild && client.antiLinkGuilds.has(message.guild.id)) {
+        // Se o usuário NÃO for Dono do Bot E NÃO tiver permissão de Gerenciar Mensagens (Mod/Adm)
+        if (message.author.id !== OWNER_ID && !message.member?.permissions.has(PermissionFlagsBits.ManageMessages)) {
+            // Verifica se tem link
+            if (message.content.toLowerCase().includes('discord.gg/') || (message.content.includes('http') && message.attachments.size === 0)) {
+                await message.delete().catch(()=>{});
+                const w = await message.channel.send(`🚫 ${message.author}, links não são permitidos neste servidor!`);
+                setTimeout(()=>w.delete().catch(()=>{}), 5000);
+                return;
+            }
         }
     }
+    // -------------------------------------
 
     if (message.channel.type === ChannelType.DM) {
         const cId = client.activeChats.get(message.author.id);
@@ -490,7 +518,9 @@ client.on('interactionCreate', async interaction => {
                 return interaction.reply({ content: '❌ Somente o Dono do Bot pode usar esse comando!', flags: [MessageFlags.Ephemeral] });
             }
             
-            const admCommands = ['config_att', 'remove_att', 'config_game_free', 'remove_game_free'];
+            // --- ATUALIZADO: Lista de comandos de ADM ---
+            const admCommands = ['config_att', 'remove_att', 'config_game_free', 'remove_game_free', 'proibirlink', 'remproibirlink'];
+            // --------------------------------------------
             if (admCommands.includes(subcommand)) {
                 if (!interaction.memberPermissions.has(PermissionFlagsBits.Administrator)) {
                     return interaction.reply({ content: '❌ Você precisa ser **Administrador** deste servidor para usar este comando.', flags: [MessageFlags.Ephemeral] });
@@ -521,10 +551,26 @@ client.on('interactionCreate', async interaction => {
                         return interaction.reply({ content: res.rowCount > 0 ? `🎁 Avisos de Jogos Grátis removidos!` : `⚠️ Nenhuma configuração encontrada.` });
                     } catch (e) { return interaction.reply({ content: '❌ Erro.', flags: [MessageFlags.Ephemeral] }); }
                 }
+                // --- NOVOS COMANDOS: ANTI-LINK ---
+                else if (subcommand === 'proibirlink') {
+                    try {
+                        await pool.query(`INSERT INTO anti_link_config (guild_id) VALUES ($1) ON CONFLICT (guild_id) DO NOTHING`, [interaction.guildId]);
+                        client.antiLinkGuilds.add(interaction.guildId);
+                        return interaction.reply({ content: `🔒 **Sistema Anti-Link Ativado!**\nAgora, apenas Administradores e Moderadores podem enviar links neste servidor.` });
+                    } catch (e) { return interaction.reply({ content: '❌ Erro ao ativar anti-link.', flags: [MessageFlags.Ephemeral] }); }
+                }
+                else if (subcommand === 'remproibirlink') {
+                    try {
+                        await pool.query('DELETE FROM anti_link_config WHERE guild_id = $1', [interaction.guildId]);
+                        client.antiLinkGuilds.delete(interaction.guildId);
+                        return interaction.reply({ content: `🔓 **Sistema Anti-Link Desativado!**\nTodos os membros podem enviar links novamente.` });
+                    } catch (e) { return interaction.reply({ content: '❌ Erro ao desativar anti-link.', flags: [MessageFlags.Ephemeral] }); }
+                }
+                // ---------------------------------
             }
 
             // ===============================================
-            // /dtg servidores
+            // NOVO: COMANDO /dtg servidores
             // ===============================================
             if (subcommand === 'servidores') {
                 if (interaction.user.id !== OWNER_ID) return interaction.reply({ content: '❌ Apenas o dono.', flags: [MessageFlags.Ephemeral] });
@@ -682,6 +728,27 @@ client.on('interactionCreate', async interaction => {
     }
     
     else if (interaction.isButton()) {
+        // --- LÓGICA DO FAQ ADICIONADA AQUI ---
+        if (interaction.customId === 'open_faq_menu') {
+            const menu = new StringSelectMenuBuilder()
+                .setCustomId('faq_select')
+                .setPlaceholder('Selecione uma dúvida / Select a topic')
+                .addOptions(
+                    new StringSelectMenuOptionBuilder().setLabel('Como Passar no Encurtador de Links | How to Get Through a Link Shortener').setValue('encurta').setEmoji('🔗'),
+                    new StringSelectMenuOptionBuilder().setLabel('Como Instalar | How to Install').setValue('instalar').setEmoji('🛠️'),
+                    new StringSelectMenuOptionBuilder().setLabel('Erro de DLL | DLL Error').setValue('dll').setEmoji('⚠️'),
+                    new StringSelectMenuOptionBuilder().setLabel('Jogar Online | Play Online').setValue('online').setEmoji('🌐'),
+                    new StringSelectMenuOptionBuilder().setLabel('Como Pedir | How to Request').setValue('pedido').setEmoji('📦')
+                );
+
+            return interaction.reply({
+                content: '🇧🇷 **Selecione sua dúvida abaixo:**\n🇺🇸 **Select your question below:**',
+                components: [new ActionRowBuilder().addComponents(menu)],
+                flags: [MessageFlags.Ephemeral]
+            });
+        }
+        // --------------------------------------
+
         if (interaction.customId === 'iniciar_pedido_pt' || interaction.customId === 'iniciar_pedido_en') { await sendPedidoInitialEphemeralMessage(interaction, interaction.customId === 'iniciar_pedido_en'); return; }
         
         if (interaction.customId.startsWith('pedido_continue_button_')) {
@@ -800,7 +867,7 @@ client.on('interactionCreate', async interaction => {
                 desc = `🇧🇷 **${tit}**\n${corpo}\n\n---------------------------------\n\n🇺🇸 **${resTitle.text}**\n${resBody.text}`;
             } catch(e){}
 
-            const embed = new EmbedBuilder().setTitle('📢 Aviso Oficial | Official Announcement').setDescription(desc).setColor(getRandomColor()).setThumbnail(AVISO_GIF_URL).setFooter({ text: 'DownTorrents Games • Admin' });
+            const embed = new EmbedBuilder().setTitle('📢 Aviso Oficial | Official Announcement').setDescription(desc).setColor(getRandomColor()).setThumbnail(AVISO_GIF_URL).setFooter({ text: '• DownTorrents Games • MrGeH' });
             
             try {
                 const c = await client.channels.fetch(targetChannelId);
@@ -822,7 +889,7 @@ client.on('interactionCreate', async interaction => {
                 const description = `🇧🇷 **${tit}**\n${corpo}\n\n---------------------------------\n\n🇺🇸 **${resTitle.text}**\n${resBody.text}`;
 
                 const embed = new EmbedBuilder()
-                    .setTitle('📢 Aviso Oficial | Official Announcement')
+                    .setTitle('📢 Aviso Oficial / Official Announcement')
                     .setDescription(description)
                     .setColor(getRandomColor())
                     .setThumbnail(AVISO_GIF_URL)
@@ -859,7 +926,7 @@ async function sendGameOrSoftwareEmbed(oi, pid, nid, tit, obs, lnk, img, typ) {
     if (obs) { try { const tr = await translate(obs, {to:'en'}); finalObs = `\n\n**Observação / Note:**\n🇧🇷 ${obs}\n---------------------\n🇺🇸 ${tr.text}`; } catch(e) { finalObs=`\n\n**Obs:** ${obs}`; } }
     const m = await mc.send({ content: `**${tit}**\n\n**Link:** [Clique Aqui! | Click Here!](${lnk})${finalObs}`, files: img ? [{ attachment: img, name: 'image.png' }] : [] });
     const emb = new EmbedBuilder().setTitle(`🎉 Novo ${typ==='jogo'?'Jogo':'Software'}!`).setColor(getRandomColor()).setDescription(`🇧🇷 Confira: **${tit}**\n🇺🇸 Check out: **${tit}**`).setThumbnail(img);
-    await nc.send({ content: '@everyone', embeds: [emb], components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel('Clique Aqui / Click Here').setURL(m.url))] });
+    await nc.send({ content: '@everyone', embeds: [emb], components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel('Clique Aqui | Click Here').setURL(m.url))] });
     await oi.editReply('✅ Sucesso!');
     return m;
 }
