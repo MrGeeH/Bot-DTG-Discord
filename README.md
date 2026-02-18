@@ -140,5 +140,5 @@ Este é um bot robusto e multifuncional para Discord, desenvolvido especificamen
 
 <div align="center">
   <b>Bot Privado desenvolvido para a comunidade DownTorrentsGames</b><br>
-  Feito com ❤️ e Código por <a href="https://github.com/MrG3H">MrG3H</a>
+  Feito com ❤️ e Código por <a href="https://github.com/MrGeeH">MrGeeH</a>
 </div>
