@@ -18,9 +18,7 @@ const commands = [
         .setName('dtg')
         .setDescription('Comandos DownTorrentsGames.')
         
-        // ===============================================================
-        // 1. COMANDOS PÚBLICOS (Ficam na raiz para fácil acesso)
-        // ===============================================================
+        // --- COMANDOS PÚBLICOS ---
         .addSubcommand(sub => sub.setName('ajuda').setDescription('Exibe a lista de comandos disponíveis.'))
         .addSubcommand(sub => sub.setName('convite').setDescription('Gera um convite para o servidor.'))
         .addSubcommand(sub => sub.setName('buscar').setDescription('🔍 Pesquisa um jogo ou software.')
@@ -31,9 +29,7 @@ const commands = [
         .addSubcommand(sub => sub.setName('pedido').setDescription('🇧🇷 Fazer pedido de jogo.'))
         .addSubcommand(sub => sub.setName('order').setDescription('🇺🇸 Request a game.'))
 
-        // ===============================================================
-        // 2. CONFIGURAÇÃO DE SERVIDORES (Admins de outros servers)
-        // ===============================================================
+        // --- CONFIGURAÇÃO DE SERVIDORES ---
         .addSubcommand(sub => sub.setName('config_att').setDescription('🔔 [Adm] Canal de notificações DTG.')
             .addChannelOption(op => op.setName('canal').setDescription('Canal.').setRequired(true).addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)))
         .addSubcommand(sub => sub.setName('remove_att').setDescription('🔕 [Adm] Remover notificações.'))
@@ -43,11 +39,7 @@ const commands = [
         .addSubcommand(sub => sub.setName('proibirlink').setDescription('🚫 [Adm] Ativar Anti-Link.'))
         .addSubcommand(sub => sub.setName('remproibirlink').setDescription('✅ [Adm] Desativar Anti-Link.'))
 
-        // ===============================================================
-        // 3. COMANDOS ADMINISTRATIVOS DO DONO (Agrupados em "admin")
-        // Isso resolve o erro de limite de 25 comandos!
-        // Uso: /dtg admin addjogo, /dtg admin chat, etc.
-        // ===============================================================
+        // --- COMANDOS DO DONO (AGRUPADOS EM ADMIN) ---
         .addSubcommandGroup(group => 
             group.setName('admin')
             .setDescription('🛠️ Comandos exclusivos do Dono/Staff.')
@@ -91,12 +83,17 @@ const commands = [
             .addSubcommand(sub => sub.setName('addpedido').setDescription('(Dono) Config Pedido.')
                 .addChannelOption(o => o.setName('canal_apresentacao').setDescription('A').setRequired(true).addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement))
                 .addChannelOption(o => o.setName('canal_logs').setDescription('L').setRequired(true).addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)))
+            
+            // --- NOVOS COMANDOS DE EDIÇÃO DE MENSAGENS ---
+            .addSubcommand(sub => sub.setName('editpost').setDescription('(Dono) Edita post (jogo/soft).')
+                .addStringOption(op => op.setName('msg_id').setDescription('Cole o Link da Mensagem ou o ID dela aqui.').setRequired(true)))
+            
+            .addSubcommand(sub => sub.setName('editaviso').setDescription('(Dono) Edita um Aviso Global.'))
         ),
 ].map(command => command.toJSON());
 
 const rest = new REST({ version: '9' }).setToken(TOKEN);
 
-// Função nomeada para evitar erro de execução
 async function fazerDeploy() {
     try {
         console.log('🔄 Iniciando processo de limpeza e atualização...');

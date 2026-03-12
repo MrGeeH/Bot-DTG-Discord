@@ -83,6 +83,16 @@ pool.connect().then(async client => {
             guild_id TEXT PRIMARY KEY
         );
     `);
+    // --- NOVO: Tabela para o histórico de Avisos Globais (Edição) ---
+    await client.query(`
+        CREATE TABLE IF NOT EXISTS historico_avisotds (
+            id SERIAL PRIMARY KEY,
+            titulo TEXT NOT NULL,
+            corpo TEXT NOT NULL,
+            targets JSONB NOT NULL,
+            data_add TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    `);
     // ---------------------------------------------------
     console.log('📦 Tabelas verificadas/criadas.');
     client.release();
@@ -416,7 +426,9 @@ client.on('messageCreate', async message => {
             const c = client.channels.cache.get(cId);
             if (c) {
                 const files = message.attachments.map(a => a.url);
-                await c.send({ embeds: [new EmbedBuilder().setAuthor({name:message.author.tag, iconURL:message.author.displayAvatarURL()}).setDescription(message.content||'*Arquivo*').setColor('#00ff00')], files });
+                // --- MODIFICADO: Removeu o Embed para enviar como texto puro, consertando o backup! ---
+                await c.send({ content: `👤 **[${message.author.tag}] enviou:**\n${message.content || '*[Apenas Arquivo/Imagem]*'}`, files });
+                // ----------------------------------------------------------------------------------------
                 await message.react('📨');
             }
             return;
@@ -506,21 +518,40 @@ client.on('interactionCreate', async interaction => {
                 await interaction.reply({ embeds: [new EmbedBuilder().setTitle(FAQ_DATA[val].title).setDescription(FAQ_DATA[val].desc).setColor('#00FF00')], flags: [MessageFlags.Ephemeral] });
             }
         }
+        // --- MODIFICAÇÃO: Menu de Seleção de Aviso para Edição ---
+        else if (interaction.customId === 'select_editaviso') {
+            if (interaction.user.id !== OWNER_ID) return;
+            const avisoId = interaction.values[0];
+            try {
+                const res = await pool.query('SELECT titulo, corpo FROM historico_avisotds WHERE id = $1', [avisoId]);
+                if (res.rows.length === 0) return interaction.reply({content: '❌ Aviso não encontrado.', flags:[MessageFlags.Ephemeral]});
+                
+                const aviso = res.rows[0];
+                const modal = new ModalBuilder().setCustomId(`editaviso_modal|${avisoId}`).setTitle('Editar Aviso Global');
+                modal.addComponents(
+                    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('aviso_titulo').setLabel('Título').setStyle(TextInputStyle.Short).setRequired(true).setValue(aviso.titulo)),
+                    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('aviso_corpo').setLabel('Mensagem').setStyle(TextInputStyle.Paragraph).setRequired(true).setValue(aviso.corpo))
+                );
+                await interaction.showModal(modal);
+            } catch(e) { console.error(e); }
+        }
+        // ---------------------------------------------------------
     }
 
     else if (interaction.isChatInputCommand()) {
         const { commandName, options } = interaction;
         if (commandName === 'dtg') {
             const subcommand = options.getSubcommand();
-            const ownerOnly = ['aviso', 'addsoft', 'addjogo', 'limpar', 'addpedido', 'setup_faq', 'config_boasvindas', 'chat', 'configquebrado', 'setup_stats', 'teste_gfree', 'avisotds', 'servidores'];
+            
+            // --- ATUALIZADO: Lista de comandos de ADM ---
+            const ownerOnly = ['aviso', 'addsoft', 'addjogo', 'limpar', 'addpedido', 'setup_faq', 'config_boasvindas', 'chat', 'configquebrado', 'setup_stats', 'teste_gfree', 'avisotds', 'servidores', 'editpost', 'editaviso'];
+            // --------------------------------------------
             
             if (ownerOnly.includes(subcommand) && interaction.user.id !== OWNER_ID) {
                 return interaction.reply({ content: '❌ Somente o Dono do Bot pode usar esse comando!', flags: [MessageFlags.Ephemeral] });
             }
             
-            // --- ATUALIZADO: Lista de comandos de ADM ---
             const admCommands = ['config_att', 'remove_att', 'config_game_free', 'remove_game_free', 'proibirlink', 'remproibirlink'];
-            // --------------------------------------------
             if (admCommands.includes(subcommand)) {
                 if (!interaction.memberPermissions.has(PermissionFlagsBits.Administrator)) {
                     return interaction.reply({ content: '❌ Você precisa ser **Administrador** deste servidor para usar este comando.', flags: [MessageFlags.Ephemeral] });
@@ -551,7 +582,6 @@ client.on('interactionCreate', async interaction => {
                         return interaction.reply({ content: res.rowCount > 0 ? `🎁 Avisos de Jogos Grátis removidos!` : `⚠️ Nenhuma configuração encontrada.` });
                     } catch (e) { return interaction.reply({ content: '❌ Erro.', flags: [MessageFlags.Ephemeral] }); }
                 }
-                // --- NOVOS COMANDOS: ANTI-LINK ---
                 else if (subcommand === 'proibirlink') {
                     try {
                         await pool.query(`INSERT INTO anti_link_config (guild_id) VALUES ($1) ON CONFLICT (guild_id) DO NOTHING`, [interaction.guildId]);
@@ -566,12 +596,98 @@ client.on('interactionCreate', async interaction => {
                         return interaction.reply({ content: `🔓 **Sistema Anti-Link Desativado!**\nTodos os membros podem enviar links novamente.` });
                     } catch (e) { return interaction.reply({ content: '❌ Erro ao desativar anti-link.', flags: [MessageFlags.Ephemeral] }); }
                 }
-                // ---------------------------------
             }
 
-            // ===============================================
-            // NOVO: COMANDO /dtg servidores
-            // ===============================================
+            // --- LÓGICA DE EXIBIÇÃO NO MODAL DE EDIÇÃO DE POST ---
+            if (subcommand === 'editpost') {
+                const input = options.getString('msg_id').trim();
+                let msgId = input;
+                let channelId = interaction.channelId; 
+
+                // Se mandou link extrai os IDs inteligentes
+                if (input.includes('discord.com/channels/')) {
+                    const parts = input.split('/');
+                    msgId = parts[parts.length - 1];
+                    channelId = parts[parts.length - 2];
+                }
+
+                try {
+                    const targetChannel = await client.channels.fetch(channelId);
+                    const targetMsg = await targetChannel.messages.fetch(msgId);
+                    if (targetMsg.author.id !== client.user.id) return interaction.reply({content: '❌ O ID fornecido não é de uma mensagem do Bot.', flags: [MessageFlags.Ephemeral]});
+
+                    const content = targetMsg.content;
+                    let oldTit = "Título";
+                    let oldLnk = "";
+                    let oldObs = "";
+
+                    // EXTRATOR SEGURO
+                    // 1. Título (Primeira linha, remove asteriscos)
+                    const linhas = content.split('\n').map(l => l.trim()).filter(l => l !== '');
+                    if (linhas.length > 0) {
+                        oldTit = linhas[0].replace(/\*/g, '').trim();
+                    }
+
+                    // 2. Link (Busca pelo padrão de link do Discord ou URL simples)
+                    const matchLnk = content.match(/\[.*?\]\((https?:\/\/[^\s)]+)\)/);
+                    if (matchLnk) {
+                        oldLnk = matchLnk[1];
+                    } else {
+                        const matchHttp = content.match(/(https?:\/\/[^\s)]+)/);
+                        if (matchHttp) oldLnk = matchHttp[1];
+                    }
+
+                    // 3. Observação (Filtra a parte PT-BR)
+                    if (content.includes('🇧🇷 ')) {
+                        const matchObs = content.match(/🇧🇷 (.*?)(?=\n-+|$)/s);
+                        if (matchObs) oldObs = matchObs[1].trim();
+                    } else if (content.includes('**Obs:**')) {
+                        const matchObs = content.match(/\*\*Obs:\*\*\s*(.*)/s);
+                        if (matchObs) oldObs = matchObs[1].trim();
+                    } else if (content.includes('**Observação / Note:**')) {
+                        const partsObj = content.split('**Observação / Note:**');
+                        if (partsObj.length > 1) {
+                            oldObs = partsObj[1].replace(/🇧🇷/g, '').replace(/🇺🇸.*/s, '').replace(/-+/g, '').trim();
+                        }
+                    }
+
+                    // Proteção de API do Discord para evitar "Algo deu errado"
+                    oldTit = oldTit.substring(0, 100);
+                    oldLnk = oldLnk.replace(/\n/g, '').substring(0, 4000); 
+                    oldObs = oldObs.substring(0, 4000);
+
+                    const modal = new ModalBuilder().setCustomId(`editpost_modal|${targetChannel.id}|${targetMsg.id}`).setTitle('Editar Postagem');
+                    
+                    modal.addComponents(
+                        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('editpost_titulo').setLabel('Título').setStyle(TextInputStyle.Short).setRequired(true).setValue(oldTit)),
+                        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('editpost_obs').setLabel('Observação').setStyle(TextInputStyle.Paragraph).setRequired(false).setValue(oldObs)),
+                        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('editpost_link').setLabel('Link').setStyle(TextInputStyle.Short).setRequired(true).setValue(oldLnk))
+                    );
+
+                    await interaction.showModal(modal);
+                } catch (e) {
+                    interaction.reply({content: '❌ Mensagem não encontrada. Certifique-se de usar o **Link da Mensagem** completo.', flags: [MessageFlags.Ephemeral]});
+                }
+            }
+
+            if (subcommand === 'editaviso') {
+                try {
+                    const res = await pool.query('SELECT id, titulo, data_add FROM historico_avisotds ORDER BY id DESC LIMIT 10');
+                    if (res.rows.length === 0) return interaction.reply({content: '❌ Nenhum aviso global encontrado na base de dados.', flags: [MessageFlags.Ephemeral]});
+
+                    const menu = new StringSelectMenuBuilder().setCustomId('select_editaviso').setPlaceholder('Selecione o aviso...');
+                    res.rows.forEach(row => {
+                        const dataFormatada = new Date(row.data_add).toLocaleDateString('pt-BR');
+                        menu.addOptions(new StringSelectMenuOptionBuilder().setLabel(`[${dataFormatada}] ${row.titulo.substring(0, 80)}`).setValue(row.id.toString()));
+                    });
+
+                    await interaction.reply({content: 'Selecione qual aviso global você quer editar:', components: [new ActionRowBuilder().addComponents(menu)], flags: [MessageFlags.Ephemeral]});
+                } catch (e) {
+                    interaction.reply({content: '❌ Erro ao buscar avisos no Banco de Dados.', flags: [MessageFlags.Ephemeral]});
+                }
+            }
+            // ------------------------------------
+
             if (subcommand === 'servidores') {
                 if (interaction.user.id !== OWNER_ID) return interaction.reply({ content: '❌ Apenas o dono.', flags: [MessageFlags.Ephemeral] });
                 
@@ -618,16 +734,50 @@ client.on('interactionCreate', async interaction => {
             }
 
             if (subcommand === 'ajuda') await handleAjudaSlash(interaction);
+            
+            // --- MODIFICAÇÃO: BUSCA AVANÇADA SEM LIMITE DE BD ---
             else if (subcommand === 'buscar') {
                 const termo = options.getString('nome').toLowerCase().trim();
                 try {
-                    const res = await pool.query(`SELECT * FROM jogos WHERE tags_busca ILIKE $1 OR titulo ILIKE $1 LIMIT 10`, [`%${termo}%`]);
+                    const palavras = termo.split(/\s+/);
+                    
+                    let condicoes = [];
+                    let valores = [];
+                    palavras.forEach((palavra, index) => {
+                        condicoes.push(`(tags_busca ILIKE $${index + 1} OR titulo ILIKE $${index + 1})`);
+                        valores.push(`%${palavra}%`);
+                    });
+                    
+                    // Removido o LIMIT para trazer tudo do banco
+                    const queryString = `SELECT * FROM jogos WHERE ${condicoes.join(' AND ')}`;
+                    
+                    const res = await pool.query(queryString, valores);
+                    
                     if (res.rows.length === 0) return interaction.reply({content:`❌ Nada encontrado.`, flags:[MessageFlags.Ephemeral]});
-                    let desc = `🔎 **Resultados:**\n\n`;
-                    res.rows.forEach(r => desc += `${r.tipo==='jogo'?'🎮':'💾'} **[${r.titulo}](${r.link})**\n`);
+                    
+                    let desc = `🔎 **Resultados (${res.rows.length} encontrados):**\n\n`;
+                    let excedeu = false;
+
+                    for (const r of res.rows) {
+                        const linha = `${r.tipo==='jogo'?'🎮':'💾'} **[${r.titulo}](${r.link})**\n`;
+                        if (desc.length + linha.length > 4000) {
+                            excedeu = true;
+                            break; // Evita erro de limite de 4096 caracteres do Discord
+                        }
+                        desc += linha;
+                    }
+
+                    if (excedeu) {
+                        desc += `\n*...e mais resultados! Seja mais específico para ver todos.*`;
+                    }
+
                     await interaction.reply({ embeds: [new EmbedBuilder().setTitle('📚 Busca').setDescription(desc).setColor('#00FF00')], flags: [MessageFlags.Ephemeral] });
-                } catch(e) { interaction.reply({content:'❌ Erro na busca.', flags:[MessageFlags.Ephemeral]}); }
+                } catch(e) { 
+                    interaction.reply({content:'❌ Erro na busca.', flags:[MessageFlags.Ephemeral]}); 
+                }
             }
+            // -------------------------------------------------
+
             else if (subcommand === 'setup_stats') {
                 await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
                 const tipo = options.getString('tipo'); 
@@ -695,9 +845,6 @@ client.on('interactionCreate', async interaction => {
             else if (subcommand === 'limpar') await handleLimparSlash(interaction);
             else if (subcommand === 'config_boasvindas') { config.welcomeChannelId = options.getChannel('canal').id; saveConfig(); await interaction.reply({ content: '✅ Configurado!', flags: [MessageFlags.Ephemeral] }); }
             
-            // ============================================
-            // NOVO: CONVITE PERSONALIZADO
-            // ============================================
             else if (subcommand === 'convite') {
                 const embed = new EmbedBuilder()
                     .setTitle('🏴‍☠️ Junte-se à Tripulação! | Join the Crew!')
@@ -728,7 +875,6 @@ client.on('interactionCreate', async interaction => {
     }
     
     else if (interaction.isButton()) {
-        // --- LÓGICA DO FAQ ADICIONADA AQUI ---
         if (interaction.customId === 'open_faq_menu') {
             const menu = new StringSelectMenuBuilder()
                 .setCustomId('faq_select')
@@ -747,7 +893,6 @@ client.on('interactionCreate', async interaction => {
                 flags: [MessageFlags.Ephemeral]
             });
         }
-        // --------------------------------------
 
         if (interaction.customId === 'iniciar_pedido_pt' || interaction.customId === 'iniciar_pedido_en') { await sendPedidoInitialEphemeralMessage(interaction, interaction.customId === 'iniciar_pedido_en'); return; }
         
@@ -767,8 +912,11 @@ client.on('interactionCreate', async interaction => {
                     const msgs = await c.messages.fetch({limit:100}); 
                     const txt = msgs.reverse().map(m => {
                         const time = m.createdAt.toLocaleString();
-                        const author = m.author.id === client.user.id ? 'Staff (Bot)' : m.author.tag;
-                        const content = m.content || '[Arquivo/Embed]';
+                        let author = m.author.id === client.user.id ? (m.embeds[0]?.author?.name || 'Staff (Bot)') : m.author.tag;
+                        let content = m.content;
+                        if (m.author.id === client.user.id && !content && m.embeds.length > 0) {
+                            content = m.embeds[0].description || '[Embed sem texto]';
+                        } else if (!content) { content = '[Arquivo/Imagem]'; }
                         return `[${time}] ${author}: ${content}`;
                     }).join('\n');
                     const l = await client.channels.fetch(config.logChannelId); 
@@ -783,9 +931,23 @@ client.on('interactionCreate', async interaction => {
             await interaction.deferUpdate();
             try { 
                 const u = await client.users.fetch(uId); 
-                const title = lang === 'en' ? (action==='added'?"ADDED!":"NOTICE") : (action==='added'?"ADICIONADO!":"AVISO");
-                const body = lang === 'en' ? (action==='added'?`Request **${gName}** fulfilled!`:`Request **${gName}** rejected.`) : (action==='added'?`Pedido **${gName}** atendido!`:`Pedido **${gName}** negado (Sem Crack).`);
+                
+                let title = "";
+                let body = "";
+                
+                if (action === 'added') {
+                    title = lang === 'en' ? "ADDED!" : "ADICIONADO!";
+                    body = lang === 'en' ? `Request **${gName}** fulfilled!` : `Pedido **${gName}** atendido!`;
+                } else if (action === 'rejected') {
+                    title = lang === 'en' ? "NOTICE" : "AVISO";
+                    body = lang === 'en' ? `Request **${gName}** rejected.` : `Pedido **${gName}** negado (Sem Crack).`;
+                } else if (action === 'already_exists') {
+                    title = lang === 'en' ? "NOTICE" : "AVISO";
+                    body = lang === 'en' ? `The game **${gName}** already exists in the Game/Software list. Please check carefully using /dtg buscar or in the corresponding list: for software look in <#1145023707711025153>, and for games look by the first letter of the game's name.` : `O jogo **${gName}** já existe na listagem de Jogo/Software. Por favor verificar corretamente através do /dtg buscar ou na listagem referente onde procura se para software procurar no <#1145023707711025153> e para jogo procurar referente a primeira letra do nome do jogo.`;
+                }
+                
                 await u.send(`${title}\n\n${body}\n\n**MrGeH**`);
+                
                 await interaction.message.edit({ components: [] }); 
                 await interaction.channel.send(`*Resolvido por ${interaction.user.tag}*`);
             } catch(e) {}
@@ -811,7 +973,81 @@ client.on('interactionCreate', async interaction => {
     else if (interaction.isModalSubmit()) {
         const { customId, fields } = interaction;
         
-        if (customId === 'report_broken_link_modal') {
+        // --- SALVAR EDIÇÃO DE POST ---
+        if (customId.startsWith('editpost_modal|')) {
+            await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
+            const parts = customId.split('|');
+            const channelId = parts[1];
+            const msgId = parts[2];
+            
+            const novoTit = fields.getTextInputValue('editpost_titulo');
+            const novoLink = fields.getTextInputValue('editpost_link');
+            
+            let novaObs = '';
+            try { novaObs = fields.getTextInputValue('editpost_obs'); } catch(e) {}
+
+            try {
+                const channel = await client.channels.fetch(channelId);
+                const msg = await channel.messages.fetch(msgId);
+
+                let finalObs = '';
+                if (novaObs && novaObs.trim() !== '') { 
+                    try { 
+                        const tr = await translate(novaObs, {to:'en'}); 
+                        finalObs = `\n\n**Observação / Note:**\n🇧🇷 ${novaObs}\n---------------------\n🇺🇸 ${tr.text}`; 
+                    } catch(e) { 
+                        finalObs=`\n\n**Obs:** ${novaObs}`; 
+                    } 
+                }
+                const novoConteudo = `**${novoTit}**\n\n**Link:** [Clique Aqui! | Click Here!](${novoLink})${finalObs}`;
+
+                await msg.edit({ content: novoConteudo });
+                await interaction.editReply('✅ Mensagem editada com sucesso!');
+            } catch(e) {
+                console.error(e);
+                await interaction.editReply('❌ Falha ao editar a mensagem.');
+            }
+        }
+
+        else if (customId.startsWith('editaviso_modal|')) {
+            await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
+            const id = customId.split('|')[1];
+            const novoTit = fields.getTextInputValue('aviso_titulo');
+            const novoCorpo = fields.getTextInputValue('aviso_corpo');
+
+            try {
+                const res = await pool.query('SELECT targets FROM historico_avisotds WHERE id = $1', [id]);
+                if (res.rows.length === 0) return interaction.editReply('❌ Aviso não encontrado no banco.');
+                const targets = res.rows[0].targets;
+
+                const resTitle = await translate(novoTit, {to:'en'}).catch(()=>({text: novoTit}));
+                const resBody = await translate(novoCorpo, {to:'en'}).catch(()=>({text: novoCorpo}));
+                const description = `🇧🇷 **${novoTit}**\n${novoCorpo}\n\n---------------------------------\n\n🇺🇸 **${resTitle.text}**\n${resBody.text}`;
+
+                const embed = new EmbedBuilder()
+                    .setTitle('📢 Aviso Oficial / Official Announcement')
+                    .setDescription(description)
+                    .setColor(getRandomColor())
+                    .setThumbnail(AVISO_GIF_URL)
+                    .setFooter({ text: '• DownTorrents Games • MrGeH' });
+
+                let sucesso = 0;
+                for (const t of targets) {
+                    try {
+                        const ch = await client.channels.fetch(t.cId);
+                        if (ch) {
+                            const m = await ch.messages.fetch(t.mId);
+                            if (m) { await m.edit({ embeds: [embed] }); sucesso++; }
+                        }
+                    } catch(e){}
+                }
+
+                await pool.query('UPDATE historico_avisotds SET titulo = $1, corpo = $2 WHERE id = $3', [novoTit, novoCorpo, id]);
+                await interaction.editReply(`✅ Aviso atualizado em ${sucesso} servidores!`);
+            } catch(e) { console.error(e); await interaction.editReply('❌ Erro na edição.'); }
+        }
+
+        else if (customId === 'report_broken_link_modal') {
             await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
             const name = fields.getTextInputValue('broken_game_name');
             const obs = fields.getTextInputValue('broken_obs');
@@ -832,11 +1068,14 @@ client.on('interactionCreate', async interaction => {
              const info = fields.getTextInputValue('pedido_info_msg');
              const log = await client.channels.fetch(config.logChannelId);
              const embed = new EmbedBuilder().setTitle(lang==='en'?'📦 New Request':'📦 Novo Pedido').setColor(getRandomColor()).setDescription(`User: <@${u}>\nName: ${name}\nPlataforma: ${plat}\nLink: ${link}\nInfo: ${info}`);
+             
              const btns = new ActionRowBuilder().addComponents(
                  new ButtonBuilder().setCustomId(`pedido_res|added|${u}|${name.replace(/ /g,'_')}|${plat.replace(/ /g,'_')}|${on.replace(/ /g,'_')}|${lang}`).setLabel('Add').setStyle(ButtonStyle.Success),
                  new ButtonBuilder().setCustomId(`pedido_res|rejected|${u}|${name.replace(/ /g,'_')}|${plat.replace(/ /g,'_')}|${on.replace(/ /g,'_')}|${lang}`).setLabel('No Crack').setStyle(ButtonStyle.Danger),
+                 new ButtonBuilder().setCustomId(`pedido_res|already_exists|${u}|${name.replace(/ /g,'_')}|${plat.replace(/ /g,'_')}|${on.replace(/ /g,'_')}|${lang}`).setLabel('Já tem').setStyle(ButtonStyle.Secondary),
                  new ButtonBuilder().setCustomId(`start_chat_${u}`).setLabel('Chat').setStyle(ButtonStyle.Primary)
              );
+             
              await log.send({ embeds: [embed], components: [btns] });
              await interaction.editReply({ content: '✅' });
              client.tempPedidoData.delete(u);
@@ -883,9 +1122,8 @@ client.on('interactionCreate', async interaction => {
             const corpo = fields.getTextInputValue('avisotds_corpo');
 
             try {
-                const resTitle = await translate(tit, {to:'en'});
-                const resBody = await translate(corpo, {to:'en'});
-                
+                const resTitle = await translate(tit, {to:'en'}).catch(()=>({text:tit}));
+                const resBody = await translate(corpo, {to:'en'}).catch(()=>({text:corpo}));
                 const description = `🇧🇷 **${tit}**\n${corpo}\n\n---------------------------------\n\n🇺🇸 **${resTitle.text}**\n${resBody.text}`;
 
                 const embed = new EmbedBuilder()
@@ -899,17 +1137,24 @@ client.on('interactionCreate', async interaction => {
                 const channels = res.rows;
 
                 let count = 0;
+                let targets = [];
+
                 for (const row of channels) {
                     try {
                         const channel = await client.channels.fetch(row.channel_id);
                         if (channel) {
-                            await channel.send({ content: '@everyone', embeds: [embed] });
+                            const sentMsg = await channel.send({ content: '@everyone', embeds: [embed] });
+                            targets.push({ cId: channel.id, mId: sentMsg.id });
                             count++;
                         }
                     } catch (e) {}
                 }
 
-                await interaction.editReply(`✅ Aviso enviado para **${count}** servidores!`);
+                try {
+                    await pool.query('INSERT INTO historico_avisotds (titulo, corpo, targets) VALUES ($1, $2, $3)', [tit, corpo, JSON.stringify(targets)]);
+                } catch(e) { console.error("Erro salvando aviso BD", e); }
+
+                await interaction.editReply(`✅ Aviso enviado para **${count}** servidores e salvo no histórico!`);
 
             } catch (e) {
                 console.error(e);
@@ -953,7 +1198,7 @@ async function handlePedidoModalFinal(i, p, o, isEn) {
 
     m.addComponents(
         new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('pedido_game_software_name').setLabel(isEn ? 'Name (Game/Software)' : 'Nome (Jogo/Software)').setStyle(TextInputStyle.Short).setRequired(true)),
-        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('pedido_original_link').setLabel('Link').setStyle(TextInputStyle.Short).setRequired(true)),
+        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('pedido_original_link').setLabel('Link Steam/EpicGames/Ubisoft/EA Games...').setStyle(TextInputStyle.Short).setRequired(true)),
         new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('pedido_info_msg').setLabel(isEn ? 'Extra Info / Observations' : 'Observações / Info Extra').setStyle(TextInputStyle.Paragraph).setRequired(false))
     );
     await i.showModal(m);
